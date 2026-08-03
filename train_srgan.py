@@ -82,12 +82,21 @@ class EndoscopyVDataset(Dataset):
             left = random.randint(0, rw - HR_SIZE)
         else:
             top, left = (rh - HR_SIZE) // 2, (rw - HR_SIZE) // 2
-        hr = v_resized[top:top + HR_SIZE, left:left + HR_SIZE]
+        hr_raw = v_resized[top:top + HR_SIZE, left:left + HR_SIZE]
 
         if self.train and random.random() < 0.5:
-            hr = np.ascontiguousarray(hr[:, ::-1])
+            hr_raw = np.ascontiguousarray(hr_raw[:, ::-1])
 
-        lr_raw = cv2.resize(hr, (LR_SIZE, LR_SIZE), interpolation=cv2.INTER_AREA)
+        # SRGAN operates entirely within the inverted/processed intensity
+        # domain in enhance() (invert happens once at Step 3, un-invert once
+        # at Step 10, after SRGAN) -- so the training target must live in
+        # that same domain, not raw V. Running pre_srgan_v on the HR crop
+        # too (not just the LR one) keeps input and target in the same
+        # domain; only using it on the LR side previously made the generator
+        # learn to undo the inversion as part of super-resolution, which then
+        # got inverted a second time at inference. See enhance.py Step 3/10.
+        hr = pre_srgan_v(hr_raw)
+        lr_raw = cv2.resize(hr_raw, (LR_SIZE, LR_SIZE), interpolation=cv2.INTER_AREA)
         lr_sharp = pre_srgan_v(lr_raw)
 
         hr_t = torch.from_numpy(hr.astype(np.float32) / 255.0).unsqueeze(0)
