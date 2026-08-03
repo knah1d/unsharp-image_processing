@@ -296,6 +296,30 @@ def enhance(image_bgr: np.ndarray,
 # 4.  Metrics
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_lpips_model = None
+
+
+def _load_lpips():
+    """Lazily load the LPIPS perceptual-similarity network (paper Tables 6-10)."""
+    global _lpips_model
+    if _lpips_model is not None:
+        return _lpips_model
+    try:
+        import lpips as lpips_pkg
+        _lpips_model = lpips_pkg.LPIPS(net="alex")
+        _lpips_model.eval()
+    except Exception as e:
+        print(f"[LPIPS] unavailable ({e}); run `pip install lpips` to enable it")
+        _lpips_model = False
+    return _lpips_model
+
+
+def _bgr_to_lpips_tensor(bgr: np.ndarray) -> torch.Tensor:
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    t = torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0)   # [1,3,H,W]
+    return t * 2 - 1                                          # LPIPS expects [-1, 1]
+
+
 def compute_metrics(original_bgr: np.ndarray,
                     enhanced_bgr: np.ndarray) -> dict:
     orig_gray = cv2.cvtColor(original_bgr, cv2.COLOR_BGR2GRAY)
@@ -304,11 +328,21 @@ def compute_metrics(original_bgr: np.ndarray,
         (orig_gray.astype(np.float32) - enh_gray.astype(np.float32)) ** 2))
     psnr      = float(cv2.PSNR(original_bgr, enhanced_bgr))
     ssim_val, _ = ssim(orig_gray, enh_gray, full=True, data_range=255)
-    return {
+
+    metrics = {
         "psnr": round(psnr, 4),
         "ssim": round(float(ssim_val), 4),
         "mse":  round(mse, 4),
     }
+
+    model = _load_lpips()
+    if model:
+        with torch.no_grad():
+            d = model(_bgr_to_lpips_tensor(original_bgr),
+                    _bgr_to_lpips_tensor(enhanced_bgr))
+        metrics["lpips"] = round(float(d.item()), 4)
+
+    return metrics
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

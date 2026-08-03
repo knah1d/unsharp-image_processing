@@ -181,6 +181,7 @@ def train(args):
         print(f"[train_srgan] resumed from epoch {start_epoch}")
 
     for epoch in range(start_epoch, args.epochs):
+        pretrain = epoch < args.pretrain_epochs
         G.train()
         D.train()
         running = {"d": 0.0, "g": 0.0}
@@ -190,6 +191,23 @@ def train(args):
             bsz = lr_v.size(0)
             real_labels = torch.ones(bsz, 1, device=device)
             fake_labels = torch.zeros(bsz, 1, device=device)
+
+            if pretrain:
+                # ---- Warm-start: content+HPF only, discriminator untouched ----
+                # Standard SRGAN practice -- an adversarially-trained-from-scratch
+                # generator is unstable; pretrain it to a reasonable reconstruction
+                # baseline first (mirrors Table 9's HPF-only config, which alone
+                # already reaches SSIM 0.93).
+                opt_G.zero_grad()
+                sr_v = G(lr_v)
+                g_content = content_loss(sr_v, hr_v)
+                g_hpf = hpf_loss(sr_v, hr_v)
+                g_loss = w_content * g_content + w_hpf * g_hpf
+                g_loss.backward()
+                opt_G.step()
+                running["d"] += 0.0
+                running["g"] += g_loss.item()
+                continue
 
             # ---- Discriminator step ----
             with torch.no_grad():
@@ -214,7 +232,8 @@ def train(args):
             running["g"] += g_loss.item()
 
         n_batches = len(train_dl)
-        print(f"[epoch {epoch}] D={running['d']/n_batches:.4f}  "
+        phase = "pretrain" if pretrain else "adversarial"
+        print(f"[epoch {epoch}] ({phase}) D={running['d']/n_batches:.4f}  "
             f"G={running['g']/n_batches:.4f}")
 
         if (epoch + 1) % args.val_every == 0 or epoch == args.epochs - 1:
@@ -253,6 +272,8 @@ def parse_args():
     p.add_argument("--manifest", required=True)
     p.add_argument("--ckpt_dir", required=True)
     p.add_argument("--epochs", type=int, default=50)
+    p.add_argument("--pretrain_epochs", type=int, default=5,
+                  help="epochs of content+HPF-only warm-start before adversarial training begins")
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--workers", type=int, default=2)
     p.add_argument("--lr", type=float, default=1e-4)
