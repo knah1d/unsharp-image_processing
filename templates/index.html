@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Endoscopy Image Enhancement</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0d1117;
+      --surface: #161b27;
+      --card:    #1e2336;
+      --border:  #2a3050;
+      --accent:  #4f8ef7;
+      --green:   #34d399;
+      --text:    #e2e8f0;
+      --muted:   #7c8aa0;
+      --danger:  #f87171;
+      --r:       12px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────── */
+    header {
+      padding: 16px 32px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 14px;
+    }
+    header .logo { font-size: 26px; }
+    header .info h1 { font-size: 17px; font-weight: 700; }
+    header .info p  { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .pill {
+      margin-left: auto;
+      background: rgba(79,142,247,.13);
+      color: var(--accent);
+      border: 1px solid rgba(79,142,247,.28);
+      border-radius: 20px;
+      font-size: 11px; font-weight: 600;
+      padding: 4px 12px;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────────── */
+    .page { max-width: 1300px; margin: 0 auto; padding: 28px 24px; }
+
+    /* ── Card ───────────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 22px 24px;
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 11px; font-weight: 700; letter-spacing: .07em;
+      text-transform: uppercase; color: var(--muted);
+      margin-bottom: 16px;
+    }
+
+    /* ── Drop zone ───────────────────────────────────────────────────── */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--r);
+      padding: 44px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+    }
+    .drop-zone:hover, .drop-zone.over {
+      border-color: var(--accent);
+      background: rgba(79,142,247,.05);
+    }
+    .drop-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .drop-icon { font-size: 38px; margin-bottom: 10px; }
+    .drop-zone p { color: var(--muted); font-size: 14px; }
+    .drop-zone strong { color: var(--accent); }
+
+    /* preview strip */
+    .preview-strip {
+      display: none;
+      align-items: center; gap: 14px;
+      margin-top: 14px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+    }
+    .preview-strip img { height: 64px; width: 64px; object-fit: cover; border-radius: 6px; }
+    .preview-strip .fname { font-size: 13px; font-weight: 600; }
+    .preview-strip .fsize { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    /* ── Parameters ──────────────────────────────────────────────────── */
+    .params-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }
+    .param label { font-size: 12px; color: var(--muted); margin-bottom: 6px; display: block; }
+    .param-row   { display: flex; align-items: center; gap: 10px; }
+    input[type=range] { flex: 1; accent-color: var(--accent); cursor: pointer; }
+    .val { font-size: 13px; font-weight: 700; color: var(--accent); min-width: 38px; text-align: right; }
+
+    /* ── Buttons ─────────────────────────────────────────────────────── */
+    .btn-row { display: flex; gap: 10px; margin-top: 20px; align-items: center; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 10px 22px; border-radius: 8px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      border: none; transition: all .18s; text-decoration: none;
+    }
+    .btn-primary  { background: var(--accent); color: #fff; }
+    .btn-primary:hover  { background: #3a75e8; }
+    .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+    .btn-dl   { background: var(--card); color: var(--text); border: 1px solid var(--border); }
+    .btn-dl:hover { border-color: var(--green); color: var(--green); }
+
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .65s linear infinite;
+      display: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Error ───────────────────────────────────────────────────────── */
+    #err {
+      display: none;
+      background: rgba(248,113,113,.09);
+      border: 1px solid rgba(248,113,113,.28);
+      color: var(--danger);
+      border-radius: 8px;
+      padding: 11px 14px;
+      font-size: 13px;
+      margin-top: 12px;
+    }
+
+    /* ── Results ─────────────────────────────────────────────────────── */
+    #results { display: none; }
+
+    /* Metrics row */
+    .metrics-row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
+    .metric {
+      flex: 1; min-width: 110px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 16px 14px; text-align: center;
+    }
+    .metric .m-label { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+    .metric .m-val   { font-size: 22px; font-weight: 800; color: var(--green); }
+    .metric .m-unit  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    /* ── Comparison image (main output) ──────────────────────────────── */
+    .comparison-wrap {
+      width: 100%;
+      border-radius: var(--r);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .comparison-wrap img {
+      width: 100%; display: block;
+    }
+
+    /* ── Interactive slider ───────────────────────────────────────────── */
+    .slider-wrap {
+      position: relative;
+      width: 100%; overflow: hidden;
+      border-radius: var(--r);
+      cursor: ew-resize;
+      user-select: none;
+      border: 1px solid var(--border);
+    }
+    .slider-wrap .base-img { display: block; width: 100%; }
+    .slider-overlay {
+      position: absolute; top: 0; left: 0;
+      width: 50%; height: 100%;
+      overflow: hidden;
+    }
+    .slider-overlay img { position: absolute; top: 0; left: 0; width: 100%; max-width: none; display: block; }
+    .slider-line {
+      position: absolute; top: 0; bottom: 0;
+      left: 50%; width: 2px;
+      background: rgba(255,255,255,.9);
+      transform: translateX(-50%);
+      pointer-events: none;
+    }
+    .slider-knob {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%,-50%);
+      width: 40px; height: 40px;
+      background: #fff; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px; color: #333;
+      box-shadow: 0 2px 10px rgba(0,0,0,.5);
+      pointer-events: none;
+    }
+    .slider-captions {
+      display: flex; justify-content: space-between;
+      padding: 6px 2px;
+      font-size: 12px; color: var(--muted);
+    }
+
+    /* ── Download row ─────────────────────────────────────────────────── */
+    .dl-row { display: flex; gap: 12px; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🔬</div>
+  <div class="info">
+    <h1>Endoscopy Image Enhancement</h1>
+    <p>CLAHE + Hu-WBI + Unsharp Masking &mdash; Jagarajan &amp; Jayaraman (2026)</p>
+  </div>
+  <span class="pill">Multimedia Tools &amp; Applications</span>
+</header>
+
+<div class="page">
+
+  <!-- ── Upload card ── -->
+  <div class="card">
+    <div class="card-title">Input Image</div>
+
+    <div class="drop-zone" id="dropZone">
+      <input type="file" id="fileInput" accept="image/*" />
+      <div class="drop-icon">📂</div>
+      <p>Drag &amp; drop an endoscopy image, or <strong>click to browse</strong></p>
+      <p style="font-size:11px;margin-top:5px;color:var(--muted)">PNG · JPG · BMP · TIFF · WEBP</p>
+    </div>
+
+    <div class="preview-strip" id="previewStrip">
+      <img id="previewImg" src="" alt="preview" />
+      <div>
+        <div class="fname" id="previewName"></div>
+        <div class="fsize" id="previewSize"></div>
+      </div>
+    </div>
+
+    <!-- Parameters -->
+    <div class="params-grid">
+      <div class="param">
+        <label>Gamma (γ) &mdash; intensity curve</label>
+        <div class="param-row">
+          <input type="range" id="gamma" min="0.3" max="1.5" step="0.05" value="0.8"
+                 oninput="V('gammaV',this.value)" />
+          <span class="val" id="gammaV">0.8</span>
+        </div>
+      </div>
+      <div class="param">
+        <label>CLAHE Clip Limit</label>
+        <div class="param-row">
+          <input type="range" id="clipLimit" min="0.5" max="8" step="0.5" value="2"
+                 oninput="V('clipV',this.value)" />
+          <span class="val" id="clipV">2</span>
+        </div>
+      </div>
+      <div class="param">
+        <label>Sharpness C<sub>n</sub> (0.7–0.95)</label>
+        <div class="param-row">
+          <input type="range" id="cn" min="0.5" max="1.2" step="0.05" value="0.85"
+                 oninput="V('cnV',this.value)" />
+          <span class="val" id="cnV">0.85</span>
+        </div>
+      </div>
+      <div class="param">
+        <label>Gaussian &sigma; (LPF blur)</label>
+        <div class="param-row">
+          <input type="range" id="sigma" min="0.3" max="3" step="0.1" value="1"
+                 oninput="V('sigmaV',this.value)" />
+          <span class="val" id="sigmaV">1</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" id="runBtn" onclick="runEnhance()" disabled>
+        ✨ Enhance Image
+        <div class="spinner" id="spinner"></div>
+      </button>
+      <button class="btn btn-ghost" onclick="reset()">Reset</button>
+    </div>
+
+    <div id="err"></div>
+  </div><!-- /upload card -->
+
+
+  <!-- ── Results ── -->
+  <div id="results">
+
+    <!-- Metrics -->
+    <div class="metrics-row">
+      <div class="metric">
+        <div class="m-label">PSNR</div>
+        <div class="m-val" id="mPSNR">—</div>
+        <div class="m-unit">dB</div>
+      </div>
+      <div class="metric">
+        <div class="m-label">SSIM</div>
+        <div class="m-val" id="mSSIM">—</div>
+        <div class="m-unit">higher = better</div>
+      </div>
+      <div class="metric">
+        <div class="m-label">MSE</div>
+        <div class="m-val" id="mMSE">—</div>
+        <div class="m-unit">lower = better</div>
+      </div>
+      <div class="metric" style="flex:2;text-align:left">
+        <div class="m-label">Pipeline</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.9;margin-top:4px">
+          RGB &rarr; HSV &nbsp;|&nbsp; Normalize + Invert V &nbsp;|&nbsp;
+          Gamma &nbsp;|&nbsp; Hu-WBI 2&times; upsample &nbsp;|&nbsp;
+          CLAHE &nbsp;|&nbsp; Downsample &nbsp;|&nbsp;
+          Unsharp Mask (HPF) &nbsp;|&nbsp; Invert &rarr; RGB
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MAIN: Comparison image (images + histograms in one frame) ── -->
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="padding:14px 20px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:13px;font-weight:700">Image &amp; Histogram Comparison</span>
+        <span style="font-size:11px;color:var(--muted)">Generated by enhancement pipeline</span>
+      </div>
+      <div class="comparison-wrap">
+        <img id="compImg" src="" alt="comparison" />
+      </div>
+    </div>
+
+    <!-- ── Interactive slider ── -->
+    <div class="card">
+      <div class="card-title">Interactive Drag Comparison</div>
+      <div class="slider-wrap" id="sliderWrap">
+        <img class="base-img" id="sliderBase" src="" alt="enhanced" />
+        <div class="slider-overlay" id="sliderOverlay">
+          <img id="sliderTop" src="" alt="original" />
+        </div>
+        <div class="slider-line"  id="sliderLine"></div>
+        <div class="slider-knob" id="sliderKnob">⇔</div>
+      </div>
+      <div class="slider-captions">
+        <span>◀ Original</span>
+        <span>Enhanced ▶</span>
+      </div>
+    </div>
+
+    <!-- ── Download ── -->
+    <div class="card">
+      <div class="card-title">Download</div>
+      <div class="dl-row">
+        <a id="dlEnhanced"   href="#" class="btn btn-dl" download="enhanced.png">
+          ⬇ Enhanced Image (.png)
+        </a>
+        <a id="dlComparison" href="#" class="btn btn-dl" download="comparison.png">
+          ⬇ Comparison Image (.png)
+        </a>
+      </div>
+    </div>
+
+  </div><!-- /results -->
+</div><!-- /page -->
+
+<script>
+  /* ── helpers ── */
+  const $ = id => document.getElementById(id);
+  const V = (id, v) => $(id).textContent = v;
+
+  let currentFile = null;
+
+  /* ── drag & drop ── */
+  const dz = $('dropZone'), fi = $('fileInput');
+  dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('over');
+    const f = e.dataTransfer.files[0];
+    if (f) setFile(f);
+  });
+  fi.addEventListener('change', e => { if (e.target.files[0]) setFile(e.target.files[0]); });
+
+  function setFile(f) {
+    currentFile = f;
+    $('runBtn').disabled = false;
+    hideErr();
+    // preview
+    const strip = $('previewStrip');
+    strip.style.display = 'flex';
+    $('previewName').textContent = f.name;
+    $('previewSize').textContent = (f.size / 1024).toFixed(1) + ' KB';
+    const r = new FileReader();
+    r.onload = e => $('previewImg').src = e.target.result;
+    r.readAsDataURL(f);
+  }
+
+  /* ── enhance ── */
+  async function runEnhance() {
+    if (!currentFile) return;
+    setLoading(true); hideErr();
+
+    const fd = new FormData();
+    fd.append('image',      currentFile);
+    fd.append('gamma',      $('gamma').value);
+    fd.append('clip_limit', $('clipLimit').value);
+    fd.append('cn',         $('cn').value);
+    fd.append('sigma',      $('sigma').value);
+
+    try {
+      const res  = await fetch('/enhance', { method:'POST', body:fd });
+      const data = await res.json();
+      if (!res.ok) { showErr(data.error || 'Server error'); return; }
+      render(data);
+    } catch(e) {
+      showErr('Network error: ' + e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function render(d) {
+    const origSrc = 'data:image/png;base64,' + d.original;
+    const enhSrc  = 'data:image/png;base64,' + d.enhanced;
+    const cmpSrc  = 'data:image/png;base64,' + d.comparison;
+
+    /* metrics */
+    $('mPSNR').textContent = d.metrics.psnr;
+    $('mSSIM').textContent = d.metrics.ssim;
+    $('mMSE').textContent  = d.metrics.mse;
+
+    /* comparison image — main output */
+    $('compImg').src = cmpSrc;
+
+    /* slider */
+    $('sliderBase').src = enhSrc;
+    $('sliderTop').src  = origSrc;
+    initSlider();
+
+    /* download links */
+    $('dlEnhanced').href   = '/download/' + d.dl_enhanced;
+    $('dlComparison').href = '/download/' + d.dl_comparison;
+
+    $('results').style.display = 'block';
+    $('results').scrollIntoView({ behavior:'smooth', block:'start' });
+  }
+
+  /* ── slider ── */
+  function initSlider() {
+    const wrap    = $('sliderWrap');
+    const overlay = $('sliderOverlay');
+    const line    = $('sliderLine');
+    const knob    = $('sliderKnob');
+    let   drag    = false;
+
+    function move(x) {
+      const r   = wrap.getBoundingClientRect();
+      const pct = Math.min(1, Math.max(0, (x - r.left) / r.width));
+      const p   = (pct * 100).toFixed(2) + '%';
+      overlay.style.width = p;
+      line.style.left     = p;
+      knob.style.left     = p;
+    }
+
+    wrap.addEventListener('mousedown',  e => { drag = true;  move(e.clientX); });
+    window.addEventListener('mousemove', e => { if (drag) move(e.clientX); });
+    window.addEventListener('mouseup',   () => drag = false);
+    wrap.addEventListener('touchstart',  e => { drag = true;  move(e.touches[0].clientX); }, {passive:true});
+    window.addEventListener('touchmove', e => { if (drag) move(e.touches[0].clientX); }, {passive:true});
+    window.addEventListener('touchend',  () => drag = false);
+
+    /* default 50 % */
+    const r = wrap.getBoundingClientRect();
+    move(r.left + r.width / 2);
+  }
+
+  /* ── ui helpers ── */
+  function setLoading(on) {
+    $('runBtn').disabled           = on || !currentFile;
+    $('spinner').style.display     = on ? 'block' : 'none';
+  }
+  function showErr(msg) { const e=$('err'); e.textContent='⚠ '+msg; e.style.display='block'; }
+  function hideErr()    { $('err').style.display='none'; }
+
+  function reset() {
+    currentFile = null;
+    fi.value    = '';
+    $('runBtn').disabled            = true;
+    $('previewStrip').style.display = 'none';
+    $('results').style.display      = 'none';
+    hideErr();
+  }
+</script>
+</body>
+</html>
