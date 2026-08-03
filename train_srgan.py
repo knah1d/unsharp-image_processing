@@ -135,6 +135,57 @@ class Discriminator(nn.Module):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Differentiable augmentation (DiffAugment-style) applied only to what the
+# discriminator sees. With ~4300 training images the discriminator can
+# memorize the real set and stop giving the generator useful signal; randomly
+# (and identically, for real vs fake) perturbing its input each step is a
+# well-established fix for small-dataset GAN training. Purely a training-time
+# technique -- doesn't touch the network architecture the paper specifies.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def diff_augment(x: torch.Tensor) -> torch.Tensor:
+    x = _rand_brightness(x)
+    x = _rand_contrast(x)
+    x = _rand_translation(x)
+    x = _rand_cutout(x)
+    return x
+
+
+def _rand_brightness(x, strength=0.2):
+    offset = (torch.rand(x.size(0), 1, 1, 1, device=x.device) - 0.5) * strength
+    return x + offset
+
+
+def _rand_contrast(x, strength=0.5):
+    mean = x.mean(dim=[1, 2, 3], keepdim=True)
+    factor = 1 + (torch.rand(x.size(0), 1, 1, 1, device=x.device) - 0.5) * strength
+    return (x - mean) * factor + mean
+
+
+def _rand_translation(x, ratio=0.125):
+    n, c, h, w = x.shape
+    max_dx, max_dy = int(h * ratio), int(w * ratio)
+    dx = torch.randint(-max_dx, max_dx + 1, (n,), device=x.device)
+    dy = torch.randint(-max_dy, max_dy + 1, (n,), device=x.device)
+    padded = torch.nn.functional.pad(x, (max_dy, max_dy, max_dx, max_dx), mode="reflect")
+    out = torch.empty_like(x)
+    for i in range(n):
+        out[i] = padded[i, :, max_dx + dx[i]:max_dx + dx[i] + h, max_dy + dy[i]:max_dy + dy[i] + w]
+    return out
+
+
+def _rand_cutout(x, ratio=0.3):
+    n, c, h, w = x.shape
+    ch, cw = int(h * ratio), int(w * ratio)
+    mask = torch.ones_like(x)
+    for i in range(n):
+        cy = random.randint(0, h - ch)
+        cx = random.randint(0, w - cw)
+        mask[i, :, cy:cy + ch, cx:cx + cw] = 0
+    return x * mask
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # High-pass ("sharpness") loss -- mirrors Eq. 7's LPF-subtraction, done with a
 # fixed (non-trainable) Gaussian depthwise conv so it stays on-GPU and
 # differentiable.
@@ -166,15 +217,23 @@ class HighPassLoss(nn.Module):
 # VGG perceptual loss -- this is what the paper's Eq. 8 "L_content" actually
 # describes (Sect. 3.4: "content loss measures whether the generated image
 # contains the crucial details present in the actual image"), not pixel MSE/L1.
-# Standard SRGAN/ESRGAN recipe: compare deep VGG19 features (relu5_4) instead
-# of raw pixels, since pixel losses reward blurry averaging over sharp detail.
+#
+# Layer choice: deep VGG layers (relu5_4, the original SRGAN/ESRGAN choice)
+# encode ImageNet object-category semantics -- multiple medical-imaging GAN
+# studies report this causes hallucinated/distorted anatomical detail when
+# applied cross-domain (VGG never saw endoscopy tissue during pretraining).
+# relu3_4 is shallow enough to capture generic edges/texture rather than
+# object-level semantics, which transfers far more safely to a domain VGG
+# was never trained on, while still avoiding the over-smoothing of raw pixel
+# loss. The paper never specifies a layer (or VGG at all) -- this is our
+# implementation choice, made conservatively given the diagnostic use case.
 # ═══════════════════════════════════════════════════════════════════════════
 
 class VGGPerceptualLoss(nn.Module):
     def __init__(self):
         super().__init__()
         weights = tv_models.VGG19_Weights.IMAGENET1K_V1
-        vgg = tv_models.vgg19(weights=weights).features[:36].eval()  # up to relu5_4
+        vgg = tv_models.vgg19(weights=weights).features[:18].eval()  # up to relu3_4
         for p in vgg.parameters():
             p.requires_grad = False
         self.vgg = vgg
@@ -267,7 +326,12 @@ def train(args):
         pretrain = epoch < args.pretrain_epochs
         G.train()
         D.train()
-        running = {"d": 0.0, "g": 0.0}
+        # Raw (unweighted) per-term averages -- lets us see if one loss term
+        # is silently dominating the others despite the configured weights,
+        # since pixel/VGG-feature/BCE-logit/HPF losses live on very different
+        # natural scales.
+        running = {"d": 0.0, "g": 0.0, "pixel": 0.0, "content": 0.0,
+                "adv": 0.0, "hpf": 0.0}
 
         for lr_v, hr_v in train_dl:
             lr_v, hr_v = lr_v.to(device), hr_v.to(device)
@@ -283,39 +347,64 @@ def train(args):
                 # already reaches SSIM 0.93).
                 opt_G.zero_grad()
                 sr_v = G(lr_v)
-                g_loss = (w_pixel * pixel_loss(sr_v, hr_v) +
-                        w_content * content_loss(sr_v, hr_v) +
-                        w_hpf * hpf_loss(sr_v, hr_v))
+                l_pixel = pixel_loss(sr_v, hr_v)
+                l_content = content_loss(sr_v, hr_v)
+                l_hpf = hpf_loss(sr_v, hr_v)
+                g_loss = w_pixel * l_pixel + w_content * l_content + w_hpf * l_hpf
                 g_loss.backward()
                 opt_G.step()
                 ema.update(G)
                 running["d"] += 0.0
                 running["g"] += g_loss.item()
+                running["pixel"] += l_pixel.item()
+                running["content"] += l_content.item()
+                running["hpf"] += l_hpf.item()
                 continue
 
             # ---- Discriminator step ----
+            # Relativistic average GAN (RaGAN, ESRGAN paper): D judges "is this
+            # more realistic than the other one" rather than real/fake in
+            # isolation -- sharper edges/textures than a plain SRGAN discriminator
+            # loss, same 8-conv-layer network the paper specifies underneath.
+            # diff_augment guards against the discriminator memorizing our
+            # relatively small (~4300 image) training set.
             with torch.no_grad():
                 sr_v = G(lr_v)
             opt_D.zero_grad()
-            d_loss = (adv_loss(D(hr_v), real_labels) +
-                    adv_loss(D(sr_v), fake_labels)) * 0.5
+            d_real_logits = D(diff_augment(hr_v))
+            d_fake_logits = D(diff_augment(sr_v))
+            rel_real = d_real_logits - d_fake_logits.mean()
+            rel_fake = d_fake_logits - d_real_logits.mean()
+            d_loss = (adv_loss(rel_real, real_labels) +
+                    adv_loss(rel_fake, fake_labels)) * 0.5
             d_loss.backward()
             opt_D.step()
 
             # ---- Generator step ----
             opt_G.zero_grad()
             sr_v = G(lr_v)
-            g_adv = adv_loss(D(sr_v), real_labels)
-            g_loss = (w_pixel * pixel_loss(sr_v, hr_v) +
-                    w_content * content_loss(sr_v, hr_v) +
-                    w_adv * g_adv +
-                    w_hpf * hpf_loss(sr_v, hr_v))
+            with torch.no_grad():
+                d_real_logits = D(diff_augment(hr_v))
+            d_fake_logits = D(diff_augment(sr_v))
+            rel_fake = d_fake_logits - d_real_logits.mean()
+            rel_real = d_real_logits - d_fake_logits.mean()
+            g_adv = (adv_loss(rel_fake, real_labels) +
+                    adv_loss(rel_real, fake_labels)) * 0.5
+            l_pixel = pixel_loss(sr_v, hr_v)
+            l_content = content_loss(sr_v, hr_v)
+            l_hpf = hpf_loss(sr_v, hr_v)
+            g_loss = (w_pixel * l_pixel + w_content * l_content +
+                    w_adv * g_adv + w_hpf * l_hpf)
             g_loss.backward()
             opt_G.step()
             ema.update(G)
 
             running["d"] += d_loss.item()
             running["g"] += g_loss.item()
+            running["pixel"] += l_pixel.item()
+            running["content"] += l_content.item()
+            running["adv"] += g_adv.item()
+            running["hpf"] += l_hpf.item()
 
         sched_G.step()
         sched_D.step()
@@ -323,7 +412,11 @@ def train(args):
         n_batches = len(train_dl)
         phase = "pretrain" if pretrain else "adversarial"
         print(f"[epoch {epoch}] ({phase}) D={running['d']/n_batches:.4f}  "
-            f"G={running['g']/n_batches:.4f}  lr={sched_G.get_last_lr()[0]:.2e}")
+            f"G={running['g']/n_batches:.4f}  lr={sched_G.get_last_lr()[0]:.2e}\n"
+            f"           raw terms -> pixel={running['pixel']/n_batches:.4f}  "
+            f"content={running['content']/n_batches:.4f}  "
+            f"adv={running['adv']/n_batches:.4f}  "
+            f"hpf={running['hpf']/n_batches:.4f}")
 
         if (epoch + 1) % args.val_every == 0 or epoch == args.epochs - 1:
             _validate(G, val_dl, device, epoch)
