@@ -219,6 +219,46 @@ def _apply_srgan(v_uint8: np.ndarray) -> np.ndarray:
 # 3.  Full enhancement pipeline
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def pre_srgan_v(v_ch: np.ndarray,
+                gamma: float      = 0.8,
+                clip_limit: float = 2.0,
+                tile_size: tuple  = (8, 8),
+                cn: float         = 0.85,
+                sigma: float      = 1.0) -> np.ndarray:
+    """
+    Classical steps 2-8 of the paper pipeline, applied to a raw V channel.
+    Shared by enhance() (inference) and train_srgan.py (training) so the
+    generator always trains on exactly the kind of input it sees in production.
+
+    Step 2  Normalize V         Eq. 1 : I_I(a,b) = I(a,b) / I_I(Max)
+    Step 3  Invert              Eq. 2 : I' = 1 - I_I(a,b)
+    Step 4  Gamma correction    Eq. 3 : Y = C * M^γ      (C=1, γ=0.8)
+    Step 5  Hu-WBI 2× upsample  Eq. 4
+    Step 6  CLAHE on upsampled image
+    Step 7  Downsample back to original size
+    Step 8  Unsharp mask (HPF)  Eq. 7 : PS = (I_i - LPF(I_i)) * C_n
+
+    Returns v_sharp, same H×W as the input v_ch.
+    """
+    v_norm  = v_ch.astype(np.float32) / 255.0
+    v_inv   = 1.0 - v_norm
+    v_gamma = np.power(np.clip(v_inv, 0.0, 1.0), gamma)
+    v_uint8 = np.clip(v_gamma * 255, 0, 255).astype(np.uint8)
+
+    v_up    = hu_wbi_upsample(v_uint8)
+    clahe   = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
+    v_clahe = clahe.apply(v_up)
+
+    h_orig, w_orig = v_uint8.shape
+    v_down = cv2.resize(v_clahe, (w_orig, h_orig),
+                        interpolation=cv2.INTER_LINEAR)
+
+    lpf     = cv2.GaussianBlur(v_down.astype(np.float32), (0, 0), sigma)
+    ps      = (v_down.astype(np.float32) - lpf) * cn
+    v_sharp = np.clip(v_down.astype(np.float32) + ps, 0, 255).astype(np.uint8)
+    return v_sharp
+
+
 def enhance(image_bgr: np.ndarray,
             gamma: float      = 0.8,
             clip_limit: float = 2.0,
@@ -230,13 +270,7 @@ def enhance(image_bgr: np.ndarray,
     Paper pipeline (Fig. 1 + algorithm steps):
 
     Step 1  RGB → HSV,  extract V channel
-    Step 2  Normalize V         Eq. 1 : I_I(a,b) = I(a,b) / I_I(Max)
-    Step 3  Invert              Eq. 2 : I' = 1 - I_I(a,b)
-    Step 4  Gamma correction    Eq. 3 : Y = C * M^γ      (C=1, γ=0.8)
-    Step 5  Hu-WBI 2× upsample  Eq. 4
-    Step 6  CLAHE on upsampled image
-    Step 7  Downsample back to original size
-    Step 8  Unsharp mask (HPF)  Eq. 7 : PS = (I_i - LPF(I_i)) * C_n
+    Steps 2-8  see pre_srgan_v()
     Step 9  SRGAN super-resolution (integrated loss Eq. 8)
     Step 10 Invert V back,  merge HSV,  convert → RGB
     """
@@ -245,30 +279,8 @@ def enhance(image_bgr: np.ndarray,
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
     h_ch, s_ch, v_ch = cv2.split(hsv)
 
-    # ── Step 2  normalize ────────────────────────────────────────────────────
-    v_norm = v_ch.astype(np.float32) / 255.0
-
-    # ── Step 3  invert ───────────────────────────────────────────────────────
-    v_inv = 1.0 - v_norm
-
-    # ── Step 4  gamma correction ──────────────────────────────────────────────
-    v_gamma = np.power(np.clip(v_inv, 0.0, 1.0), gamma)
-    v_uint8 = np.clip(v_gamma * 255, 0, 255).astype(np.uint8)
-
-    # ── Steps 5–6  Hu-WBI upsample then CLAHE ────────────────────────────────
-    v_up    = hu_wbi_upsample(v_uint8)
-    clahe   = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
-    v_clahe = clahe.apply(v_up)
-
-    # ── Step 7  downsample ────────────────────────────────────────────────────
-    h_orig, w_orig = v_uint8.shape
-    v_down = cv2.resize(v_clahe, (w_orig, h_orig),
-                        interpolation=cv2.INTER_LINEAR)
-
-    # ── Step 8  unsharp mask (HPF)  PS = (I_i - LPF(I_i)) * C_n ─────────────
-    lpf    = cv2.GaussianBlur(v_down.astype(np.float32), (0, 0), sigma)
-    ps     = (v_down.astype(np.float32) - lpf) * cn
-    v_sharp = np.clip(v_down.astype(np.float32) + ps, 0, 255).astype(np.uint8)
+    # ── Steps 2-8 ─────────────────────────────────────────────────────────
+    v_sharp = pre_srgan_v(v_ch, gamma, clip_limit, tile_size, cn, sigma)
 
     # ── Step 9  SRGAN super-resolution ───────────────────────────────────────
     v_sr = _apply_srgan(v_sharp) if use_srgan else v_sharp
