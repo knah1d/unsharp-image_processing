@@ -107,6 +107,24 @@ class ResidualBlock(nn.Module):
         return x + out
 
 
+def _icnr_init(conv: nn.Conv2d, scale: int):
+    """
+    ICNR initialization (Aitken et al., "Checkerboard artifact free sub-pixel
+    convolution"). At init, makes the PixelShuffle upsample behave like
+    nearest-neighbour upsampling -- avoids the checkerboard artifacts a
+    randomly-initialized sub-pixel conv produces from step one of training.
+    Purely a weight-init scheme; does not change the architecture the paper
+    specifies (still "2x via PixelShuffle").
+    """
+    out_ch, in_ch, kh, kw = conv.weight.shape
+    sub = torch.empty(out_ch // (scale ** 2), in_ch, kh, kw)
+    nn.init.kaiming_normal_(sub)
+    kernel = sub.repeat_interleave(scale ** 2, dim=0)
+    conv.weight.data.copy_(kernel)
+    if conv.bias is not None:
+        nn.init.zeros_(conv.bias)
+
+
 class SRGANGenerator(nn.Module):
     """
     SRGAN generator (paper Section 3.4):
@@ -131,8 +149,10 @@ class SRGANGenerator(nn.Module):
             nn.BatchNorm2d(64),
         )
         # Deconvolution (2× PixelShuffle)
+        upsample_conv = nn.Conv2d(64, 64 * scale * scale, 3, padding=1)
+        _icnr_init(upsample_conv, scale)
         self.upsample   = nn.Sequential(
-            nn.Conv2d(64, 64 * scale * scale, 3, padding=1),
+            upsample_conv,
             nn.PixelShuffle(scale),
             nn.PReLU(),
         )
