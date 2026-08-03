@@ -461,12 +461,16 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--workers", type=int, default=2)
     p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--w_pixel", type=float, default=0.01,
-                  help="small pixel-L1 stability anchor alongside the VGG content loss")
-    p.add_argument("--w_content", type=float, default=1.0,
-                  help="weight on VGG19-relu5_4 perceptual loss (the paper's L_content)")
-    p.add_argument("--w_adv", type=float, default=1e-3)
-    p.add_argument("--w_hpf", type=float, default=0.1)
+    # Weights rebalanced against measured raw-term magnitudes from a real
+    # smoke test (raw pixel~0.06, content~0.6, adv~5-7, hpf~0.015), so each
+    # term's *weighted* contribution lands in the same rough order of
+    # magnitude instead of one term silently dominating the total loss.
+    p.add_argument("--w_pixel", type=float, default=1.0,
+                  help="pixel-L1 stability anchor alongside the VGG content loss")
+    p.add_argument("--w_content", type=float, default=0.05,
+                  help="weight on VGG19-relu3_4 perceptual loss (the paper's L_content)")
+    p.add_argument("--w_adv", type=float, default=0.01)
+    p.add_argument("--w_hpf", type=float, default=1.0)
     p.add_argument("--ema_decay", type=float, default=0.999)
     p.add_argument("--val_every", type=int, default=5)
     return p.parse_args()
