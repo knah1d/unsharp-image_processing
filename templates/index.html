@@ -109,6 +109,23 @@
     input[type=range] { flex: 1; accent-color: var(--accent); cursor: pointer; }
     .val { font-size: 13px; font-weight: 700; color: var(--accent); min-width: 38px; text-align: right; }
 
+    /* ── Toggle switch ───────────────────────────────────────────────── */
+    .toggle-wrap { display: flex; align-items: center; gap: 10px; height: 100%; }
+    .toggle { position: relative; display: inline-block; width: 42px; height: 24px; flex-shrink: 0; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .track {
+      position: absolute; inset: 0; cursor: pointer;
+      background: var(--border); border-radius: 24px; transition: background .2s;
+    }
+    .toggle .track::before {
+      content: ""; position: absolute; height: 18px; width: 18px;
+      left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: transform .2s;
+    }
+    .toggle input:checked + .track { background: var(--accent); }
+    .toggle input:checked + .track::before { transform: translateX(18px); }
+    .toggle-label { font-size: 13px; font-weight: 600; }
+    .toggle-sub   { font-size: 11px; color: var(--muted); margin-top: 1px; }
+
     /* ── Buttons ─────────────────────────────────────────────────────── */
     .btn-row { display: flex; gap: 10px; margin-top: 20px; align-items: center; }
     .btn {
@@ -283,6 +300,20 @@
           <span class="val" id="sigmaV">1</span>
         </div>
       </div>
+      <div class="param">
+        <label>Super-Resolution</label>
+        <div class="toggle-wrap">
+          <label class="toggle">
+            <input type="checkbox" id="useSrgan" checked
+                   onchange="V('srganLabel', this.checked ? 'SRGAN enabled' : 'SRGAN disabled')" />
+            <span class="track"></span>
+          </label>
+          <div>
+            <div class="toggle-label" id="srganLabel">SRGAN enabled</div>
+            <div class="toggle-sub">Off = classical pipeline only</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="btn-row">
@@ -415,6 +446,7 @@
     fd.append('clip_limit', $('clipLimit').value);
     fd.append('cn',         $('cn').value);
     fd.append('sigma',      $('sigma').value);
+    fd.append('use_srgan',  $('useSrgan').checked);
 
     try {
       const res  = await fetch('/enhance', { method:'POST', body:fd });
