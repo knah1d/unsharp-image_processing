@@ -324,6 +324,17 @@ def train(args):
         start_epoch = ckpt["epoch"] + 1
         if not args.fresh_schedule:
             resumed_sched_state = (ckpt.get("sched_G"), ckpt.get("sched_D"))
+        else:
+            # Actually bump the LR back up for the restart -- opt_G/opt_D's
+            # loaded state has 'lr' frozen at wherever the old schedule left
+            # it (often already at eta_min), and a scheduler constructed
+            # afterward captures whatever's currently in the param groups as
+            # its base_lr. Without this reset, "fresh_schedule" would just
+            # build a flat cosine curve at the old decayed value.
+            for g in opt_G.param_groups:
+                g["lr"] = args.lr
+            for g in opt_D.param_groups:
+                g["lr"] = args.lr
         print(f"[train_srgan] resumed from epoch {start_epoch}"
             + ("  (fresh LR schedule -- warm restart)" if args.fresh_schedule else ""))
 
