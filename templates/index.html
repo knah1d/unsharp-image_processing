@@ -27,6 +27,9 @@
       min-height: 100vh;
     }
 
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    a:focus-visible, button:focus-visible { outline-offset: 3px; }
+
     /* ── Header ─────────────────────────────────────────────────────── */
     header {
       padding: 16px 32px;
@@ -93,9 +96,16 @@
       border-radius: 8px;
       padding: 10px 14px;
     }
-    .preview-strip img { height: 64px; width: 64px; object-fit: cover; border-radius: 6px; }
-    .preview-strip .fname { font-size: 13px; font-weight: 600; }
+    .preview-strip img { height: 64px; width: 64px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+    .preview-strip .fname { font-size: 13px; font-weight: 600; word-break: break-all; }
     .preview-strip .fsize { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .preview-strip .meta { flex: 1; min-width: 0; }
+    .remove-btn {
+      flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+      cursor: pointer; font-size: 14px; line-height: 1; transition: all .15s;
+    }
+    .remove-btn:hover { border-color: var(--danger); color: var(--danger); }
 
     /* ── Parameters ──────────────────────────────────────────────────── */
     .params-grid {
@@ -165,7 +175,10 @@
     }
 
     /* ── Results ─────────────────────────────────────────────────────── */
-    #results { display: none; }
+    #results { display: none; opacity: 0; transform: translateY(10px); transition: opacity .35s, transform .35s; }
+    #results.show { opacity: 1; transform: translateY(0); }
+
+    .status-text { font-size: 13px; color: var(--muted); }
 
     /* Metrics row */
     .metrics-row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
@@ -232,6 +245,40 @@
 
     /* ── Download row ─────────────────────────────────────────────────── */
     .dl-row { display: flex; gap: 12px; flex-wrap: wrap; }
+
+    /* ── Responsive ──────────────────────────────────────────────────── */
+    @media (max-width: 720px) {
+      header { padding: 12px 16px; flex-wrap: wrap; }
+      header .info h1 { font-size: 15px; }
+      header .info p  { font-size: 11px; }
+      .pill { margin-left: 0; order: 3; width: 100%; text-align: center; margin-top: 8px; }
+
+      .page { padding: 16px 12px; }
+      .card { padding: 16px 14px; }
+
+      .drop-zone { padding: 32px 14px; }
+      .drop-icon { font-size: 30px; }
+
+      .btn-row { flex-direction: column; align-items: stretch; }
+      .btn { justify-content: center; width: 100%; padding: 12px 22px; }
+
+      .metrics-row { flex-direction: column; }
+      .metric { min-width: 100%; text-align: left; display: flex; align-items: center; justify-content: space-between; }
+      .metric .m-label { margin-bottom: 0; }
+
+      .dl-row { flex-direction: column; }
+      .dl-row .btn { width: 100%; justify-content: center; }
+    }
+
+    @media (max-width: 420px) {
+      header .info p { display: none; }
+      .toggle-sub { display: none; }
+      .slider-knob { width: 34px; height: 34px; font-size: 13px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
   </style>
 </head>
 <body>
@@ -252,24 +299,25 @@
     <div class="card-title">Input Image</div>
 
     <div class="drop-zone" id="dropZone">
-      <input type="file" id="fileInput" accept="image/*" />
-      <div class="drop-icon">📂</div>
+      <input type="file" id="fileInput" accept="image/*" aria-label="Choose an endoscopy image to upload" />
+      <div class="drop-icon" aria-hidden="true">📂</div>
       <p>Drag &amp; drop an endoscopy image, or <strong>click to browse</strong></p>
-      <p style="font-size:11px;margin-top:5px;color:var(--muted)">PNG · JPG · BMP · TIFF · WEBP</p>
+      <p style="font-size:11px;margin-top:5px;color:var(--muted)">PNG · JPG · BMP · TIFF · WEBP &middot; up to 32&nbsp;MB</p>
     </div>
 
     <div class="preview-strip" id="previewStrip">
-      <img id="previewImg" src="" alt="preview" />
-      <div>
+      <img id="previewImg" src="" alt="Selected image preview" />
+      <div class="meta">
         <div class="fname" id="previewName"></div>
         <div class="fsize" id="previewSize"></div>
       </div>
+      <button type="button" class="remove-btn" onclick="reset()" aria-label="Remove selected image" title="Remove">✕</button>
     </div>
 
     <!-- Parameters -->
     <div class="params-grid">
       <div class="param">
-        <label>Gamma (γ) &mdash; intensity curve</label>
+        <label for="gamma">Gamma (γ) &mdash; intensity curve</label>
         <div class="param-row">
           <input type="range" id="gamma" min="0.3" max="1.5" step="0.05" value="0.8"
                  oninput="V('gammaV',this.value)" />
@@ -277,7 +325,7 @@
         </div>
       </div>
       <div class="param">
-        <label>CLAHE Clip Limit</label>
+        <label for="clipLimit">CLAHE Clip Limit</label>
         <div class="param-row">
           <input type="range" id="clipLimit" min="0.5" max="8" step="0.5" value="2"
                  oninput="V('clipV',this.value)" />
@@ -285,7 +333,7 @@
         </div>
       </div>
       <div class="param">
-        <label>Sharpness C<sub>n</sub> (0.7–0.95)</label>
+        <label for="cn">Sharpness C<sub>n</sub> (0.7–0.95)</label>
         <div class="param-row">
           <input type="range" id="cn" min="0.5" max="1.2" step="0.05" value="0.85"
                  oninput="V('cnV',this.value)" />
@@ -293,7 +341,7 @@
         </div>
       </div>
       <div class="param">
-        <label>Gaussian &sigma; (LPF blur)</label>
+        <label for="sigma">Gaussian &sigma; (LPF blur)</label>
         <div class="param-row">
           <input type="range" id="sigma" min="0.3" max="3" step="0.1" value="1"
                  oninput="V('sigmaV',this.value)" />
@@ -301,7 +349,7 @@
         </div>
       </div>
       <div class="param">
-        <label>Super-Resolution</label>
+        <label for="useSrgan">Super-Resolution</label>
         <div class="toggle-wrap">
           <label class="toggle">
             <input type="checkbox" id="useSrgan" checked
@@ -318,13 +366,14 @@
 
     <div class="btn-row">
       <button class="btn btn-primary" id="runBtn" onclick="runEnhance()" disabled>
-        ✨ Enhance Image
+        <span id="runBtnLabel">✨ Enhance Image</span>
         <div class="spinner" id="spinner"></div>
       </button>
-      <button class="btn btn-ghost" onclick="reset()">Reset</button>
+      <button class="btn btn-ghost" type="button" onclick="reset()">Reset</button>
+      <span class="status-text" id="statusText" aria-live="polite"></span>
     </div>
 
-    <div id="err"></div>
+    <div id="err" role="alert" aria-live="assertive"></div>
   </div><!-- /upload card -->
 
 
@@ -409,6 +458,8 @@
   const V = (id, v) => $(id).textContent = v;
 
   let currentFile = null;
+  const MAX_MB = 32;
+  const ALLOWED_EXT = ['png','jpg','jpeg','bmp','tif','tiff','webp'];
 
   /* ── drag & drop ── */
   const dz = $('dropZone'), fi = $('fileInput');
@@ -422,6 +473,16 @@
   fi.addEventListener('change', e => { if (e.target.files[0]) setFile(e.target.files[0]); });
 
   function setFile(f) {
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    if (!ALLOWED_EXT.includes(ext)) {
+      showErr(`Unsupported file type ".${ext}". Use: ${ALLOWED_EXT.join(', ')}.`);
+      return;
+    }
+    if (f.size > MAX_MB * 1024 * 1024) {
+      showErr(`File is ${(f.size / (1024*1024)).toFixed(1)} MB, which exceeds the ${MAX_MB} MB limit.`);
+      return;
+    }
+
     currentFile = f;
     $('runBtn').disabled = false;
     hideErr();
@@ -482,8 +543,10 @@
     $('dlEnhanced').href   = '/download/' + d.dl_enhanced;
     $('dlComparison').href = '/download/' + d.dl_comparison;
 
-    $('results').style.display = 'block';
-    $('results').scrollIntoView({ behavior:'smooth', block:'start' });
+    const results = $('results');
+    results.style.display = 'block';
+    requestAnimationFrame(() => results.classList.add('show'));
+    results.scrollIntoView({ behavior:'smooth', block:'start' });
   }
 
   /* ── slider ── */
@@ -516,9 +579,14 @@
   }
 
   /* ── ui helpers ── */
+  const PARAM_INPUTS = ['gamma','clipLimit','cn','sigma','useSrgan'];
+
   function setLoading(on) {
-    $('runBtn').disabled           = on || !currentFile;
-    $('spinner').style.display     = on ? 'block' : 'none';
+    $('runBtn').disabled       = on || !currentFile;
+    $('spinner').style.display = on ? 'block' : 'none';
+    $('runBtnLabel').textContent = on ? 'Enhancing…' : '✨ Enhance Image';
+    $('statusText').textContent  = on ? 'Running enhancement pipeline — this can take a few seconds.' : '';
+    PARAM_INPUTS.forEach(id => $(id).disabled = on);
   }
   function showErr(msg) { const e=$('err'); e.textContent='⚠ '+msg; e.style.display='block'; }
   function hideErr()    { $('err').style.display='none'; }
@@ -528,7 +596,9 @@
     fi.value    = '';
     $('runBtn').disabled            = true;
     $('previewStrip').style.display = 'none';
+    $('results').classList.remove('show');
     $('results').style.display      = 'none';
+    $('statusText').textContent     = '';
     hideErr();
   }
 </script>

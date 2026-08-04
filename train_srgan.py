@@ -303,12 +303,6 @@ def train(args):
     opt_G = torch.optim.Adam(G.parameters(), lr=args.lr, betas=(0.9, 0.999))
     opt_D = torch.optim.Adam(D.parameters(), lr=args.lr, betas=(0.9, 0.999))
 
-    # LR decay at the midpoint of the adversarial phase (standard SRGAN recipe)
-    adv_epochs = max(1, args.epochs - args.pretrain_epochs)
-    decay_at = args.pretrain_epochs + adv_epochs // 2
-    sched_G = torch.optim.lr_scheduler.MultiStepLR(opt_G, milestones=[decay_at], gamma=0.1)
-    sched_D = torch.optim.lr_scheduler.MultiStepLR(opt_D, milestones=[decay_at], gamma=0.1)
-
     pixel_loss = nn.L1Loss()
     content_loss = VGGPerceptualLoss().to(device)
     hpf_loss = HighPassLoss().to(device)
@@ -319,17 +313,33 @@ def train(args):
     os.makedirs(args.ckpt_dir, exist_ok=True)
     start_epoch = 0
     resume_path = os.path.join(args.ckpt_dir, "srgan_last.pth")
+    resumed_sched_state = None
     if os.path.exists(resume_path):
         ckpt = torch.load(resume_path, map_location=device)
         G.load_state_dict(ckpt["G"])
         D.load_state_dict(ckpt["D"])
         opt_G.load_state_dict(ckpt["opt_G"])
         opt_D.load_state_dict(ckpt["opt_D"])
-        sched_G.load_state_dict(ckpt["sched_G"])
-        sched_D.load_state_dict(ckpt["sched_D"])
         ema.shadow = {k: v.to(device) for k, v in ckpt["ema"].items()}
         start_epoch = ckpt["epoch"] + 1
-        print(f"[train_srgan] resumed from epoch {start_epoch}")
+        if not args.fresh_schedule:
+            resumed_sched_state = (ckpt.get("sched_G"), ckpt.get("sched_D"))
+        print(f"[train_srgan] resumed from epoch {start_epoch}"
+            + ("  (fresh LR schedule -- warm restart)" if args.fresh_schedule else ""))
+
+    # Smooth cosine decay across the adversarial phase instead of a single
+    # hard 10x step. The step version (decay at the midpoint) plateaued for
+    # the last ~20 epochs of a real run -- 23 epochs stuck at a 10x-lower LR
+    # with nowhere further to go. T_max spans only the REMAINING adversarial
+    # epochs from wherever we're starting (fresh run or a --fresh_schedule
+    # warm restart), not the whole original run, so the curve actually
+    # reaches eta_min exactly at the new args.epochs.
+    remaining_adv_epochs = max(1, args.epochs - max(start_epoch, args.pretrain_epochs))
+    sched_G = torch.optim.lr_scheduler.CosineAnnealingLR(opt_G, T_max=remaining_adv_epochs, eta_min=args.lr * 0.01)
+    sched_D = torch.optim.lr_scheduler.CosineAnnealingLR(opt_D, T_max=remaining_adv_epochs, eta_min=args.lr * 0.01)
+    if resumed_sched_state and resumed_sched_state[0] is not None:
+        sched_G.load_state_dict(resumed_sched_state[0])
+        sched_D.load_state_dict(resumed_sched_state[1])
 
     for epoch in range(start_epoch, args.epochs):
         pretrain = epoch < args.pretrain_epochs
@@ -415,8 +425,12 @@ def train(args):
             running["adv"] += g_adv.item()
             running["hpf"] += l_hpf.item()
 
-        sched_G.step()
-        sched_D.step()
+        # Only step the schedulers during the adversarial phase -- G's LR
+        # stays flat at args.lr through the whole pretrain warm-start, then
+        # the cosine curve runs exactly across remaining_adv_epochs.
+        if not pretrain:
+            sched_G.step()
+            sched_D.step()
 
         n_batches = len(train_dl)
         phase = "pretrain" if pretrain else "adversarial"
@@ -478,10 +492,20 @@ def parse_args():
                   help="pixel-L1 stability anchor alongside the VGG content loss")
     p.add_argument("--w_content", type=float, default=0.05,
                   help="weight on VGG19-relu3_4 perceptual loss (the paper's L_content)")
-    p.add_argument("--w_adv", type=float, default=0.01)
+    # Bumped from 0.01: a real completed run showed adv shrinking to ~8% of
+    # the weighted total at convergence (pixel~35%, content~32%, hpf~24%,
+    # adv~8%) while val_psnr plateaued for 20+ epochs -- too small a share
+    # for Table 9's adversarial+content combination to keep pushing quality
+    # the way it does in the paper's ablation.
+    p.add_argument("--w_adv", type=float, default=0.03)
     p.add_argument("--w_hpf", type=float, default=1.0)
     p.add_argument("--ema_decay", type=float, default=0.999)
     p.add_argument("--val_every", type=int, default=5)
+    p.add_argument("--fresh_schedule", action="store_true",
+                  help="on resume, ignore the checkpoint's LR schedule state and start a fresh "
+                        "cosine decay (warm restart) over the epochs remaining -- use this to try "
+                        "to break out of a training plateau rather than continuing the exhausted "
+                        "old schedule")
     return p.parse_args()
 
 
