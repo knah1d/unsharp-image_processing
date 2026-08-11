@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
 
-from enhance import build_comparison_image, compute_metrics, enhance
+from enhance import build_comparison_image, compute_metrics, enhance, srgan_is_trained
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB
@@ -91,6 +91,7 @@ def enhance_image():
             "enhanced":   _to_b64(enhanced),
             "comparison": _to_b64(comparison),
             "metrics":    metrics,
+            "srgan_trained": srgan_is_trained() if use_srgan else None,
             "dl_enhanced":   f"{uid}_enhanced.png",
             "dl_comparison": f"{uid}_comparison.png",
         }

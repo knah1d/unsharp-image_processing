@@ -178,6 +178,11 @@ _srgan_model: SRGANGenerator | None = None
 _WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "srgan_v.pth")
 
 
+def srgan_is_trained() -> bool:
+    """Whether a trained srgan_v.pth is present (vs. the Lanczos fallback)."""
+    return os.path.exists(_WEIGHTS_PATH)
+
+
 def _load_srgan() -> SRGANGenerator | None:
     """Load SRGAN generator once and cache it."""
     global _srgan_model

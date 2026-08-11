@@ -380,6 +380,9 @@
   <!-- ── Results ── -->
   <div id="results">
 
+    <!-- Model status -->
+    <div id="modelStatus" style="display:none;font-size:12px;margin-bottom:12px;padding:8px 14px;border-radius:8px;border:1px solid var(--border)"></div>
+
     <!-- Metrics -->
     <div class="metrics-row">
       <div class="metric">
@@ -395,6 +398,11 @@
       <div class="metric">
         <div class="m-label">MSE</div>
         <div class="m-val" id="mMSE">—</div>
+        <div class="m-unit">lower = better</div>
+      </div>
+      <div class="metric" id="lpipsMetric" style="display:none">
+        <div class="m-label">LPIPS</div>
+        <div class="m-val" id="mLPIPS">—</div>
         <div class="m-unit">lower = better</div>
       </div>
       <div class="metric" style="flex:2;text-align:left">
@@ -530,6 +538,32 @@
     $('mPSNR').textContent = d.metrics.psnr;
     $('mSSIM').textContent = d.metrics.ssim;
     $('mMSE').textContent  = d.metrics.mse;
+
+    const lpipsTile = $('lpipsMetric');
+    if (d.metrics.lpips !== undefined) {
+      $('mLPIPS').textContent = d.metrics.lpips;
+      lpipsTile.style.display = '';
+    } else {
+      lpipsTile.style.display = 'none';
+    }
+
+    /* model status */
+    const status = $('modelStatus');
+    if (d.srgan_trained === null) {
+      status.style.display = 'none';
+    } else if (d.srgan_trained) {
+      status.textContent = '✓ Trained SRGAN model (srgan_v.pth) was used for this result.';
+      status.style.borderColor = 'rgba(52,211,153,.35)';
+      status.style.color = 'var(--green)';
+      status.style.background = 'rgba(52,211,153,.08)';
+      status.style.display = 'block';
+    } else {
+      status.textContent = '⚠ No trained srgan_v.pth found — fell back to the classical Lanczos+detail-boost approximation, not the full model.';
+      status.style.borderColor = 'rgba(248,113,113,.35)';
+      status.style.color = 'var(--danger)';
+      status.style.background = 'rgba(248,113,113,.08)';
+      status.style.display = 'block';
+    }
 
     /* comparison image — main output */
     $('compImg').src = cmpSrc;
