@@ -1,0 +1,20 @@
+{
+  "method1_srgan_v": {
+    "psnr": 21.7489,
+    "ssim": 0.8737,
+    "mse": 420.5929,
+    "lpips": 0.1902
+  },
+  "method2_rrdb_transfer": {
+    "psnr": 22.6973,
+    "ssim": 0.8674,
+    "mse": 339.122,
+    "lpips": 0.2012
+  },
+  "method3_yiq": {
+    "psnr": 22.8461,
+    "ssim": 0.8256,
+    "mse": 337.5858,
+    "lpips": 0.2394
+  }
+}

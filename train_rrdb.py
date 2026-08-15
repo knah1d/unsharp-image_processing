@@ -14,6 +14,15 @@ RaGAN loss, diff_augment, EMA, cosine LR schedule, dataset/manifest loading.
 Only the generator and its learning rate differ (fine-tuning regime: much
 lower LR so we don't wreck the pretrained prior).
 
+Known issue (fixed here): the discriminator was found to dominate training
+(D accuracy pinned near 100% early and staying there) when lr_d was 10x
+lr_g -- a fully-random D racing ahead of a gently fine-tuned, already-strong
+pretrained G, with no correction since both decayed on the same cosine
+schedule shape. Fixed by narrowing the LR gap (lr_d default now 3e-5,
+~3x lr_g instead of ~10x) and by logging D's real/fake classification
+accuracy every epoch so "D dominating" is a measured number, not an
+inference from the loss curve.
+
 Usage:
     # one-time: download the pretrained base weights
     wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth
@@ -104,7 +113,8 @@ def train(args):
         pretrain = epoch < args.pretrain_epochs
         G.train()
         D.train()
-        running = {"d": 0.0, "g": 0.0, "pixel": 0.0, "content": 0.0, "adv": 0.0, "hpf": 0.0}
+        running = {"d": 0.0, "g": 0.0, "pixel": 0.0, "content": 0.0, "adv": 0.0, "hpf": 0.0,
+                  "d_real_acc": 0.0, "d_fake_acc": 0.0}
 
         for lr_v, hr_v in train_dl:
             lr_v, hr_v = lr_v.to(device), hr_v.to(device)
@@ -144,6 +154,16 @@ def train(args):
             d_loss.backward()
             opt_D.step()
 
+            # D's actual real/fake classification accuracy (relativistic
+            # criterion: real is "correctly called" when rel_real > 0, fake
+            # when rel_fake < 0) -- turns "D dominating" into a measured
+            # number instead of an inference from the loss curve. Sustained
+            # values near 1.0 on both = D has won and G's adversarial signal
+            # is close to useless.
+            with torch.no_grad():
+                running["d_real_acc"] += (rel_real > 0).float().mean().item()
+                running["d_fake_acc"] += (rel_fake < 0).float().mean().item()
+
             # ---- Generator step ----
             opt_G.zero_grad()
             sr_v = G(lr_v)
@@ -174,8 +194,12 @@ def train(args):
 
         n_batches = len(train_dl)
         phase = "pretrain" if pretrain else "adversarial"
+        d_acc_str = ""
+        if not pretrain:
+            d_acc_str = (f"  D_real_acc={running['d_real_acc']/n_batches:.3f}  "
+                        f"D_fake_acc={running['d_fake_acc']/n_batches:.3f}")
         print(f"[epoch {epoch}] ({phase}) D={running['d']/n_batches:.4f}  "
-            f"G={running['g']/n_batches:.4f}  lr={sched_G.get_last_lr()[0]:.2e}\n"
+            f"G={running['g']/n_batches:.4f}  lr={sched_G.get_last_lr()[0]:.2e}{d_acc_str}\n"
             f"           raw terms -> pixel={running['pixel']/n_batches:.4f}  "
             f"content={running['content']/n_batches:.4f}  "
             f"adv={running['adv']/n_batches:.4f}  "
@@ -213,7 +237,11 @@ def parse_args():
     # Fine-tuning LRs -- much lower than train_srgan.py's from-scratch 1e-4,
     # standard practice to avoid wrecking the pretrained prior.
     p.add_argument("--lr_g", type=float, default=1e-5)
-    p.add_argument("--lr_d", type=float, default=1e-4)
+    # was 1e-4 (10x lr_g) -- that gap let a from-random D race ahead of a
+    # gently fine-tuned, already-strong pretrained G, with the imbalance
+    # never correcting since both decay on the same cosine schedule shape.
+    # 3e-5 (~3x lr_g) keeps D learning faster than G, without swamping it.
+    p.add_argument("--lr_d", type=float, default=3e-5)
     p.add_argument("--w_pixel", type=float, default=1.0)
     p.add_argument("--w_content", type=float, default=0.05)
     p.add_argument("--w_adv", type=float, default=0.03)
