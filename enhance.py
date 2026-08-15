@@ -22,6 +22,14 @@ Claims 3 & 4 – "Workflow order wrong / CLAHE not on inverted intensity"
   WRONG. The current pipeline already follows the paper exactly:
     normalize → invert → gamma → Hu-WBI upsample → CLAHE → downsample →
     unsharp mask → SRGAN → invert back → RGB.
+
+Claim 5 – "Color transfer (Eq. 6) is missing"
+  CORRECT (found on a later fidelity pass). The paper applies a covariance
+  -based linear color transfer after HSV→RGB reconstruction, to correct the
+  color shift introduced by training the SRGAN partly on natural (non
+  -endoscopy) IoT images. Added below as color_transfer(); statistics are
+  computed only from pixels below 90% of the maximum intensity, per the
+  paper, so specular highlights don't skew the correction.
 ─────────────────────────────────────────────────────────────────────────────
 """
 
@@ -284,13 +292,51 @@ def pre_srgan_v(v_ch: np.ndarray,
     return v_sharp
 
 
+def color_transfer(source_rgb: np.ndarray, target_rgb: np.ndarray,
+                    max_val: float = 255.0, threshold_frac: float = 0.9) -> np.ndarray:
+    """
+    Eq. 6: covariance-based linear color transfer.
+
+    R'_target = sqrt(cov_source) / sqrt(cov_target) * (R_target - M_target) + M_source
+
+    Corrects the color shift the SRGAN can introduce from being trained partly
+    on natural (non-endoscopy) IoT images -- restores the reconstructed
+    image's per-channel color statistics to match the original input's.
+
+    Per the paper, the mean/covariance are computed "using image intensities
+    less than 90% of the maximum intensity value to prevent color retransfer"
+    -- i.e. specular highlights (bright glare spots) are excluded from the
+    statistics, computed independently for source and target using each
+    image's own per-pixel max(R,G,B) as the intensity measure (matching this
+    pipeline's own definition of intensity/V elsewhere).
+    """
+    src = source_rgb.astype(np.float32)
+    tgt = target_rgb.astype(np.float32)
+
+    src_mask = src.max(axis=2) < threshold_frac * max_val
+    tgt_mask = tgt.max(axis=2) < threshold_frac * max_val
+
+    out = tgt.copy()
+    for c in range(3):
+        src_vals = src[..., c][src_mask]
+        tgt_vals = tgt[..., c][tgt_mask]
+        if src_vals.size < 2 or tgt_vals.size < 2:
+            continue  # not enough non-highlight pixels -- leave channel as-is
+        src_mean, src_std = src_vals.mean(), src_vals.std() + 1e-6
+        tgt_mean, tgt_std = tgt_vals.mean(), tgt_vals.std() + 1e-6
+        out[..., c] = (src_std / tgt_std) * (tgt[..., c] - tgt_mean) + src_mean
+
+    return np.clip(out, 0, max_val).astype(np.uint8)
+
+
 def enhance(image_bgr: np.ndarray,
             gamma: float      = 0.8,
             clip_limit: float = 2.0,
             tile_size: tuple  = (8, 8),
             cn: float         = 0.85,
             sigma: float      = 1.0,
-            use_srgan: bool   = True) -> np.ndarray:
+            use_srgan: bool   = True,
+            use_color_transfer: bool = True) -> np.ndarray:
     """
     Paper pipeline (Fig. 1 + algorithm steps):
 
@@ -298,6 +344,7 @@ def enhance(image_bgr: np.ndarray,
     Steps 2-8  see pre_srgan_v()
     Step 9  SRGAN super-resolution (integrated loss Eq. 8)
     Step 10 Invert V back,  merge HSV,  convert → RGB
+    Step 11 Color transfer (Eq. 6), against the original image
     """
     # ── Step 1 ──────────────────────────────────────────────────────────────
     rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
@@ -314,6 +361,11 @@ def enhance(image_bgr: np.ndarray,
     v_final      = 255 - v_sr
     enhanced_hsv = cv2.merge([h_ch, s_ch, v_final])
     enhanced_rgb = cv2.cvtColor(enhanced_hsv, cv2.COLOR_HSV2RGB)
+
+    # ── Step 11  color transfer (Eq. 6) ──────────────────────────────────────
+    if use_color_transfer:
+        enhanced_rgb = color_transfer(rgb, enhanced_rgb)
+
     return cv2.cvtColor(enhanced_rgb, cv2.COLOR_RGB2BGR)
 
 
